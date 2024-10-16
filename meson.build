@@ -73,6 +73,8 @@ if get_option('libpldmresponder').allowed()
     conf_data.set('TERMINUS_HANDLE', get_option('terminus-handle'))
     conf_data.set('DBUS_TIMEOUT', get_option('dbus-timeout-value'))
     add_project_arguments('-DLIBPLDMRESPONDER', language: 'cpp')
+elif
+    conf_data.set('DBUS_TIMEOUT', get_option('dbus-timeout-value'))
 endif
 if get_option('softoff').allowed()
     conf_data.set(
@@ -215,8 +217,8 @@ libpldmutils = declare_dependency(
 )
 
 deps = [
-    libpldm_dep,
     libpldmutils,
+    libpldm_dep,
     nlohmann_json_dep,
     phosphor_dbus_interfaces,
     phosphor_logging_dep,
