@@ -33,10 +33,10 @@ MctpDiscovery::MctpDiscovery(
     sdbusplus::bus_t& bus,
     std::initializer_list<MctpDiscoveryHandlerIntf*> list) :
     bus(bus), mctpEndpointAddedSignal(
-                  bus, interfacesAdded(MCTPPath),
+                  bus, interfacesAdded("/au/com/codeconstruct/mctp1/networks"),
                   std::bind_front(&MctpDiscovery::discoverEndpoints, this)),
     mctpEndpointRemovedSignal(
-        bus, interfacesRemoved(MCTPPath),
+        bus, interfacesRemoved("/au/com/codeconstruct/mctp1/networks"),
         std::bind_front(&MctpDiscovery::removeEndpoints, this)),
     handlers(list)
 {
