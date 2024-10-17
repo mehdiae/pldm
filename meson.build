@@ -73,7 +73,7 @@ if get_option('libpldmresponder').allowed()
     conf_data.set('TERMINUS_HANDLE', get_option('terminus-handle'))
     conf_data.set('DBUS_TIMEOUT', get_option('dbus-timeout-value'))
     add_project_arguments('-DLIBPLDMRESPONDER', language: 'cpp')
-elif
+else
     conf_data.set('DBUS_TIMEOUT', get_option('dbus-timeout-value'))
 endif
 if get_option('softoff').allowed()
