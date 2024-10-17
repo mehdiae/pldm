@@ -21,6 +21,14 @@ PHOSPHOR_LOG2_USING;
 
 namespace pldm
 {
+    
+// Define the type for the property map
+using PropertyType = std::variant<
+    uint8_t,              // EID (DBus type: y)
+    uint32_t,            // NetworkId (DBus type: u)
+    std::vector<uint8_t> // SupportedMessageTypes (DBus type: ay)
+>;
+    
 MctpDiscovery::MctpDiscovery(
     sdbusplus::bus_t& bus,
     std::initializer_list<MctpDiscoveryHandlerIntf*> list) :
@@ -39,59 +47,78 @@ MctpDiscovery::MctpDiscovery(
 void MctpDiscovery::getMctpInfos(MctpInfos& mctpInfos)
 {
     // Find all implementations of the MCTP Endpoint interface
-    pldm::utils::GetSubTreeResponse mapperResponse;
-    try
-    {
-        mapperResponse = pldm::utils::DBusHandler().getSubtree(
-            MCTPPath, 0, std::vector<std::string>({MCTPInterface}));
-    }
-    catch (const sdbusplus::exception_t& e)
-    {
-        error(
-            "Failed to getSubtree call at path '{PATH}' and interface '{INTERFACE}', error - {ERROR} ",
-            "ERROR", e, "PATH", MCTPPath, "INTERFACE", MCTPInterface);
-        return;
-    }
+    try {
+        // Create a D-Bus connection to the system bus
+        auto bus = sdbusplus::bus::new_default();
 
-    for (const auto& [path, services] : mapperResponse)
-    {
-        for (const auto& serviceIter : services)
-        {
-            const std::string& service = serviceIter.first;
-            try
-            {
-                auto properties =
-                    pldm::utils::DBusHandler().getDbusPropertiesVariant(
-                        service.c_str(), path.c_str(), MCTPInterface);
+        // Step 1: Query the subtree for MCTP endpoints
+        auto methodCall = bus.new_method_call(
+            "xyz.openbmc_project.ObjectMapper",  // Service name
+            "/xyz/openbmc_project/object_mapper", // Object path
+            "xyz.openbmc_project.ObjectMapper",  // Interface name
+            "GetSubTree"                         // Method name
+        );
 
-                if (properties.contains("NetworkId") &&
+        // Search the networks path for endpoints with the MCTP interface
+        std::string searchPath = "/au/com/codeconstruct/mctp1/networks";
+        methodCall.append(searchPath, 0, std::vector<std::string>({"xyz.openbmc_project.MCTP.Endpoint"}));
+
+        // Send the method call and get the reply
+        auto reply = bus.call(methodCall);
+
+        // Parse the reply into a map of object paths to services and interfaces
+        using SubTreeType = std::map<std::string, std::map<std::string, std::vector<std::string>>>;
+        SubTreeType subtree;
+        reply.read(subtree);
+
+        // Step 2: Loop over the results and query each endpoint's properties
+        for (const auto& [objectPath, serviceMap] : subtree) {
+            for (const auto& [serviceName, interfaces] : serviceMap) {
+                if (std::find(interfaces.begin(), interfaces.end(),
+                              "xyz.openbmc_project.MCTP.Endpoint") != interfaces.end()) {
+                    // Create a method call to get all properties of the interface
+                    auto propCall = bus.new_method_call(
+                        serviceName.c_str(),                  // Service name
+                        objectPath.c_str(),                   // Object path
+                        "org.freedesktop.DBus.Properties",    // Interface name
+                        "GetAll"                              // Method name
+                    );
+
+                    // Specify the interface we want the properties of
+                    propCall.append("xyz.openbmc_project.MCTP.Endpoint");
+
+                    // Send the method call and get the reply
+                    auto propReply = bus.call(propCall);
+
+                    // Parse the reply (map of property names to variants)
+                    std::map<std::string, PropertyType> properties;
+                    propReply.read(properties);
+
+                    if (properties.contains("NetworkId") &&
                     properties.contains("EID") &&
                     properties.contains("SupportedMessageTypes"))
-                {
-                    auto networkId =
-                        std::get<NetworkId>(properties.at("NetworkId"));
-                    auto eid = std::get<mctp_eid_t>(properties.at("EID"));
-                    auto types = std::get<std::vector<uint8_t>>(
-                        properties.at("SupportedMessageTypes"));
-                    if (std::find(types.begin(), types.end(), mctpTypePLDM) !=
-                        types.end())
-                    {
-                        info(
+                        {
+                        auto networkId =
+                            std::get<uint32_t>(properties.at("NetworkId"));
+                        auto eid = std::get<uint8_t>(properties.at("EID"));
+                        auto types = std::get<std::vector<uint8_t>>(
+                            properties.at("SupportedMessageTypes"));
+                        if (std::find(types.begin(), types.end(), mctpTypePLDM) !=
+                            types.end())
+                        {
+                            info(
                             "Adding Endpoint networkId '{NETWORK}' and EID '{EID}'",
                             "NETWORK", networkId, "EID", eid);
-                        mctpInfos.emplace_back(
-                            MctpInfo(eid, emptyUUID, "", networkId));
+                            mctpInfos.emplace_back(
+                                MctpInfo(eid, emptyUUID, "", networkId));
+                        }
                     }
                 }
             }
-            catch (const sdbusplus::exception_t& e)
-            {
-                error(
-                    "Error reading MCTP Endpoint property at path '{PATH}' and service '{SERVICE}', error - {ERROR}",
-                    "ERROR", e, "SERVICE", service, "PATH", path);
-                return;
-            }
         }
+    } catch (const std::exception& e) {
+        error("error - {ERROR}","ERROR", e);
+        return ;
     }
 }
 
@@ -118,7 +145,7 @@ void MctpDiscovery::getAddedMctpInfos(sdbusplus::message_t& msg,
 
     for (const auto& [intfName, properties] : interfaces)
     {
-        if (intfName == MCTPInterface)
+        if (intfName == "xyz.openbmc_project.MCTP.Endpoint")
         {
             if (properties.contains("NetworkId") &&
                 properties.contains("EID") &&
