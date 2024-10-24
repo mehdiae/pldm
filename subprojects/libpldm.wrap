@@ -1,5 +1,5 @@
 [wrap-git]
-url = https://github.com/openbmc/libpldm.git
+url = https://github.com/mehdiae/libpldm.git
 revision = HEAD
 
 [provide]
