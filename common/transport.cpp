@@ -7,9 +7,21 @@
 #include <algorithm>
 #include <ranges>
 #include <system_error>
+#include <iostream>
+#include <map>
+#include <vector>
+#include <sdbusplus/server.hpp>
+
+using namespace sdbusplus::bus::match::rules;
 
 struct pldm_transport* transport_impl_init(TransportImpl& impl, pollfd& pollfd);
 void transport_impl_destroy(TransportImpl& impl);
+using PropertyType = std::variant<
+    uint8_t,              // EID (DBus type: y)
+    uint32_t,            // NetworkId (DBus type: u)
+    std::vector<uint8_t> // SupportedMessageTypes (DBus type: ay)
+>;
+static constexpr uint8_t mctpTypePLDM = 1;
 
 static constexpr uint8_t MCTP_EID_VALID_MIN = 8;
 static constexpr uint8_t MCTP_EID_VALID_MAX = 255;
@@ -30,7 +42,80 @@ static constexpr uint8_t MCTP_EID_VALID_MAX = 255;
  * its TID. The EID to TID mappings of pldmtool and pldmd should be coherent to
  * prevent the failure of pldm_transport_mctp_demux_recv().
  */
+static void discoverMCTP(std::map < uint8_t , uint8_t > * eid_network_map){
+    
+    // Find all implementations of the MCTP Endpoint interface
+    try {
+        // Create a D-Bus connection to the system bus
+        
+        auto bus = sdbusplus::bus::new_default();
 
+        // Step 1: Query the subtree for MCTP endpoints
+        auto methodCall = bus.new_method_call(
+            "xyz.openbmc_project.ObjectMapper",  // Service name
+            "/xyz/openbmc_project/object_mapper", // Object path
+            "xyz.openbmc_project.ObjectMapper",  // Interface name
+            "GetSubTree"                         // Method name
+        );
+
+        // Search the networks path for endpoints with the MCTP interface
+        std::string searchPath = "/au/com/codeconstruct/mctp1/networks";
+        methodCall.append(searchPath, 0, std::vector<std::string>({"xyz.openbmc_project.MCTP.Endpoint"}));
+
+        // Send the method call and get the reply
+        auto reply = bus.call(methodCall);
+
+        // Parse the reply into a map of object paths to services and interfaces
+        using SubTreeType = std::map<std::string, std::map<std::string, std::vector<std::string>>>;
+        SubTreeType subtree;
+        reply.read(subtree);
+
+        // Step 2: Loop over the results and query each endpoint's properties
+        for (const auto& [objectPath, serviceMap] : subtree) {
+            for (const auto& [serviceName, interfaces] : serviceMap) {
+                if (std::find(interfaces.begin(), interfaces.end(),
+                              "xyz.openbmc_project.MCTP.Endpoint") != interfaces.end()) {
+                    // Create a method call to get all properties of the interface
+                    auto propCall = bus.new_method_call(
+                        serviceName.c_str(),                  // Service name
+                        objectPath.c_str(),                   // Object path
+                        "org.freedesktop.DBus.Properties",    // Interface name
+                        "GetAll"                              // Method name
+                    );
+
+                    // Specify the interface we want the properties of
+                    propCall.append("xyz.openbmc_project.MCTP.Endpoint");
+
+                    // Send the method call and get the reply
+                    auto propReply = bus.call(propCall);
+
+                    // Parse the reply (map of property names to variants)
+                    std::map<std::string, PropertyType> properties;
+                    propReply.read(properties);
+
+                    if (properties.contains("NetworkId") &&
+                    properties.contains("EID") &&
+                    properties.contains("SupportedMessageTypes"))
+                        {
+                        auto networkId =
+                            std::get<uint32_t>(properties.at("NetworkId"));
+                        auto eid = std::get<uint8_t>(properties.at("EID"));
+                        auto types = std::get<std::vector<uint8_t>>(
+                            properties.at("SupportedMessageTypes"));
+                        if (std::find(types.begin(), types.end(), mctpTypePLDM) !=
+                            types.end())
+                        {
+                            (*eid_network_map)[eid] = networkId;
+                        }
+                    }
+                }
+            }
+        }
+    } catch (const std::exception& e) {
+        std::cout<<"Error" <<std::endl; 
+        return ;
+    }
+}
 [[maybe_unused]] static struct pldm_transport*
     pldm_transport_impl_mctp_demux_init(TransportImpl& impl, pollfd& pollfd)
 {
@@ -72,11 +157,16 @@ static constexpr uint8_t MCTP_EID_VALID_MAX = 255;
     {
         return nullptr;
     }
-
+    std::map < uint8_t , uint8_t > eid_network_map;
+    discoverMCTP(&eid_network_map);
     for (const auto eid :
          std::views::iota(MCTP_EID_VALID_MIN, MCTP_EID_VALID_MAX))
     {
-        int rc = pldm_transport_af_mctp_map_tid(impl.af_mctp, eid, eid);
+        
+        if(!eid_network_map.contains(eid)){
+            continue;
+        }
+        int rc = pldm_transport_af_mctp_map_tid(impl.af_mctp, eid, eid,eid_network_map[eid]);
         if (rc)
         {
             pldm_transport_af_mctp_destroy(impl.af_mctp);
@@ -142,7 +232,7 @@ int PldmTransport::getEventSource() const
 pldm_requester_rc_t PldmTransport::sendMsg(pldm_tid_t tid, const void* tx,
                                            size_t len)
 {
-    return pldm_transport_send_msg(transport, tid, tx, len);
+   return pldm_transport_send_msg(transport, tid, tx, len);
 }
 
 pldm_requester_rc_t PldmTransport::recvMsg(pldm_tid_t& tid, void*& rx,
